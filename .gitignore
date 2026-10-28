@@ -6,3 +6,10 @@ __pycache__/
 !.env.example
 data/
 *.cookies.txt
+
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+.ruff_cache/

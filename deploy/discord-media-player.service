@@ -1,0 +1,40 @@
+[Unit]
+Description=DiscordMediaPlayer voice bot
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=discord-media
+Group=discord-media
+WorkingDirectory=/opt/DiscordMediaPlayer
+ExecStart=/opt/DiscordMediaPlayer/.venv/bin/python -m musicbot
+EnvironmentFile=/etc/discord-media-player.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=YOUTUBE_COOKIE_FILE=/var/lib/discord-media-player/youtube-cookies.txt
+StateDirectory=discord-media-player
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=true
+TasksMax=128
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

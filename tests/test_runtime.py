@@ -1,22 +1,26 @@
-from pathlib import Path
-from types import SimpleNamespace
 import shutil
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import discord
+
 from musicbot.bot import MusicBot, audio_source
+from musicbot.config import Settings
 
 
 class BotTests(unittest.TestCase):
     def setUp(self):
-        self.bot = MusicBot()
+        self.bot = MusicBot(Settings.from_env({}))
 
     def test_commands_registered(self):
-        self.assertEqual({c.name for c in self.bot.tree.get_commands()},
-                         {'play', 'queue', 'skip', 'pause', 'resume', 'stop', 'leave', 'youtube_status'})
+        self.assertEqual(
+            {c.name for c in self.bot.tree.get_commands()},
+            {'play', 'queue', 'skip', 'pause', 'resume', 'stop', 'leave', 'youtube_status'},
+        )
         self.assertTrue(all(c.guild_only for c in self.bot.tree.get_commands()))
 
     def test_any_voice_member_can_control_but_other_channels_cannot(self):
@@ -42,8 +46,19 @@ class BotTests(unittest.TestCase):
     def test_real_ffmpeg_pcm_and_discord_opus_encoding(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'tone.wav'
-            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
-                            'sine=frequency=440:duration=0.1', str(path)], check=True)
+            subprocess.run(
+                [
+                    'ffmpeg',
+                    '-v',
+                    'error',
+                    '-f',
+                    'lavfi',
+                    '-i',
+                    'sine=frequency=440:duration=0.1',
+                    str(path),
+                ],
+                check=True,
+            )
             source = audio_source(str(path))
             try:
                 frame = source.read()
@@ -52,3 +67,14 @@ class BotTests(unittest.TestCase):
                 self.assertTrue(encoder.encode(frame, encoder.SAMPLES_PER_FRAME))
             finally:
                 source.cleanup()
+
+    @unittest.skipUnless(shutil.which('ffmpeg'), 'FFmpeg is not installed')
+    def test_ffmpeg_failure_has_no_broken_stderr_thread(self):
+        source = audio_source('/nonexistent-discord-media-test-file.wav')
+        try:
+            self.assertEqual(source.read(), b'')
+            self.assertIsNone(source._pipe_reader_thread)
+            source._process.wait(timeout=5)
+            self.assertNotEqual(source._process.returncode, 0)
+        finally:
+            source.cleanup()
