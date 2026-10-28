@@ -1,0 +1,42 @@
+services:
+  bot:
+    image: discord-media-player:local
+    build:
+      context: .
+      target: runtime
+    # Compose reads .env locally. The image never includes this file.
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN:-}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:-}
+      ALLOWED_GUILD_IDS: ${ALLOWED_GUILD_IDS:-}
+      SYNC_COMMANDS: ${SYNC_COMMANDS:-true}
+      MAX_PLAYERS: ${MAX_PLAYERS:-5}
+      MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-10000}
+      PLAY_COOLDOWN_SECONDS: ${PLAY_COOLDOWN_SECONDS:-5}
+      IDLE_TIMEOUT: ${IDLE_TIMEOUT:-300}
+      EMPTY_CHANNEL_TIMEOUT: ${EMPTY_CHANNEL_TIMEOUT:-60}
+      # Container path is fixed so a host path in .env cannot hide the volume.
+      YOUTUBE_COOKIE_FILE: /app/data/youtube-cookies.txt
+    volumes:
+      - bot-data:/app/data
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    # Discord uses outbound connections. No host ports need publishing.
+
+volumes:
+  bot-data:

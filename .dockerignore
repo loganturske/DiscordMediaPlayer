@@ -1,0 +1,12 @@
+# Allow only build inputs; credentials, exports, Git history and local venvs stay out.
+**
+!Dockerfile
+!requirements.txt
+!requirements-dev.txt
+!pyproject.toml
+!musicbot/
+!musicbot/*.py
+!scripts/
+!scripts/*.py
+!tests/
+!tests/*.py

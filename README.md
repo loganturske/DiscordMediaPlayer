@@ -4,6 +4,8 @@ A self-hosted Discord bot that plays YouTube video and YouTube Music playlist au
 
 ## Run the bot
 
+For a local installation with bundled dependencies, follow [the Docker Compose guide](docs/DOCKER.md). It covers Windows, macOS, Linux, persistent YouTube cookies, and updates. The instructions below are for running Python directly.
+
 Requires Python 3.12+, FFmpeg, libopus, and Node.js 20+ (for YouTube's JavaScript challenges). On Debian/Ubuntu, install system prerequisites with `sudo apt-get install python3-venv ffmpeg libopus0` and install Node.js 20+ through your usual supported package source.
 
 ```sh
@@ -20,7 +22,7 @@ Create an application and bot in the [Discord Developer Portal](https://discord.
 
 Without `DISCORD_GUILD_ID`, commands are registered globally and may take time to appear. When switching from development to global registration, remove old guild command registrations in your development server if Discord shows duplicates.
 
-The bot is a long-running process. A hardened systemd service and operator runbook are provided in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Run only one instance per bot token. Queue state is in memory and resets on restart. Cookie authentication is stored separately and survives restarts when its file is retained. `.env.example` documents environment variables; `.env` files are **not** loaded automatically.
+The bot is a long-running process. A hardened systemd service and operator runbook are provided in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Run only one instance per bot token. Queue state is in memory and resets on restart. Cookie authentication is stored separately and survives restarts when its file is retained. `.env.example` documents environment variables. Docker Compose loads `.env`; direct Python execution does **not** load it automatically.
 
 ## Commands
 
