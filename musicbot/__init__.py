@@ -1,0 +1,1 @@
+"""Shared Discord voice player."""
