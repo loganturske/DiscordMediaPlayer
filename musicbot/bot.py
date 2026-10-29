@@ -9,6 +9,7 @@ import os
 import shutil
 import signal
 import subprocess
+from datetime import datetime, timezone
 from itertools import islice
 
 import discord
@@ -265,6 +266,41 @@ class MusicBot(discord.Client):
         finally:
             self.connecting.discard(interaction.guild_id)
 
+    @staticmethod
+    def unavailable_interaction(error):
+        """An expired or claimed interaction cannot safely be acknowledged again."""
+        return isinstance(error, discord.InteractionResponded) or (
+            isinstance(error, discord.HTTPException) and error.code in {10062, 40060, 10015}
+        )
+
+    @staticmethod
+    def log_unavailable_interaction(interaction, error):
+        created = getattr(interaction, 'created_at', None)
+        age = (
+            (datetime.now(timezone.utc) - created).total_seconds()
+            if isinstance(created, datetime)
+            else None
+        )
+        logging.warning(
+            'Discord interaction unavailable: code=%s command=%s guild_id=%s age_seconds=%s. '
+            'Retry the command and check for duplicate bot containers/processes or Discord network delays.',
+            getattr(error, 'code', None),
+            getattr(interaction.command, 'name', 'unknown'),
+            interaction.guild_id,
+            round(age, 2) if age is not None else 'unknown',
+        )
+
+    async def acknowledge_play(self, interaction):
+        """Acknowledge before validation/connection work; never replay a stale command."""
+        try:
+            await interaction.response.defer(thinking=True)
+        except (discord.HTTPException, discord.InteractionResponded) as error:
+            if not self.unavailable_interaction(error):
+                raise
+            self.log_unavailable_interaction(interaction, error)
+            return False
+        return True
+
     def register_commands(self):
         @self.tree.command(
             name='play',
@@ -276,9 +312,10 @@ class MusicBot(discord.Client):
             1, self.settings.play_cooldown, key=lambda i: (i.guild_id, i.user.id)
         )
         async def play(interaction: discord.Interaction, url: str):
+            if not await self.acknowledge_play(interaction):
+                return
             url = youtube_url(url)
             self.member_channel(interaction)
-            await interaction.response.defer(thinking=True)
             async with self.guild_lock(interaction.guild_id):
                 player = await self.get_player(interaction)
                 player.submit(url, interaction.user.id)
@@ -377,6 +414,9 @@ class MusicBot(discord.Client):
         @self.tree.error
         async def on_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
             original = getattr(error, 'original', error)
+            if self.unavailable_interaction(original):
+                self.log_unavailable_interaction(interaction, original)
+                return
             message = (
                 str(original)
                 if isinstance(original, ValueError)
@@ -393,10 +433,22 @@ class MusicBot(discord.Client):
                 interaction.guild_id,
                 getattr(interaction.command, 'name', 'unknown'),
             )
-            if interaction.response.is_done():
-                await interaction.followup.send(safe_text(message), ephemeral=True)
-            else:
-                await interaction.response.send_message(safe_text(message), ephemeral=True)
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(safe_text(message), ephemeral=True)
+                else:
+                    await interaction.response.send_message(safe_text(message), ephemeral=True)
+            except (discord.HTTPException, discord.InteractionResponded) as response_error:
+                # The error reply may itself outlive the interaction deadline.
+                # Never allow another exception to escape CommandTree.on_error.
+                if self.unavailable_interaction(response_error):
+                    self.log_unavailable_interaction(interaction, response_error)
+                else:
+                    logging.warning(
+                        'Could not deliver command error: type=%s code=%s',
+                        type(response_error).__name__,
+                        getattr(response_error, 'code', None),
+                    )
 
 
 async def serve(bot, token):

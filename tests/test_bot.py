@@ -271,6 +271,52 @@ class BotAsyncTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.tree.on_error(self.interaction, error)
         self.assertIn('5 seconds', self.interaction.followup.send.call_args.args[0])
 
+    @staticmethod
+    def discord_http_error(code=10062, status=404):
+        response = SimpleNamespace(status=status, reason='test error')
+        return discord.HTTPException(response, {'code': code, 'message': 'private-response-text'})
+
+    async def test_rejected_acknowledgement_does_not_connect_or_import(self):
+        for code in (10062, 40060):
+            with self.subTest(code=code):
+                self.interaction.response.defer.side_effect = self.discord_http_error(code)
+                await self.command('play', 'https://youtu.be/abc')
+        self.channel.connect.assert_not_awaited()
+        self.interaction.response.send_message.assert_not_awaited()
+        self.interaction.followup.send.assert_not_awaited()
+        self.assertFalse(self.bot.players)
+
+    async def test_play_acknowledges_before_url_validation(self):
+        with self.assertRaises(ValueError):
+            await self.command('play', 'not-a-youtube-link')
+        self.interaction.response.defer.assert_awaited_once()
+        self.channel.connect.assert_not_awaited()
+
+    async def test_unavailable_interaction_error_is_not_replied_to(self):
+        for code in (10062, 40060, 10015):
+            error = app_commands.CommandInvokeError(
+                self.bot.tree.get_command('play'), self.discord_http_error(code)
+            )
+            await self.bot.tree.on_error(self.interaction, error)
+        self.interaction.response.send_message.assert_not_awaited()
+        self.interaction.followup.send.assert_not_awaited()
+
+    async def test_error_reply_expiring_does_not_raise_a_second_exception(self):
+        self.interaction.response.send_message.side_effect = self.discord_http_error()
+        error = app_commands.CommandInvokeError(
+            self.bot.tree.get_command('play'), ValueError('Use a YouTube URL.')
+        )
+        await self.bot.tree.on_error(self.interaction, error)
+        self.interaction.response.is_done.return_value = True
+        self.interaction.followup.send.side_effect = self.discord_http_error(50013, 403)
+        await self.bot.tree.on_error(self.interaction, error)
+
+    async def test_unexpected_defer_failure_remains_a_command_failure(self):
+        self.interaction.response.defer.side_effect = self.discord_http_error(50013, 403)
+        with self.assertRaises(discord.HTTPException):
+            await self.command('play', 'https://youtu.be/abc')
+        self.channel.connect.assert_not_awaited()
+
     async def test_service_cancellation_closes_client(self):
         fake = AsyncMock()
         fake.__aenter__.return_value = fake
