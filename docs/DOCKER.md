@@ -146,3 +146,24 @@ A running container is not proof of successful playback. Before relying on it, v
 The Linux/amd64 image was built and tested with the supplied Dockerfile and Compose configuration. All 101 tests passed inside the test image, with 90.8% combined statement/branch coverage, including real HTTP/HTTPS audio decoding, required request headers, safe HTTP 403 diagnostics, and certificate verification. The runtime smoke check passed with the read-only filesystem and non-root user. Separate containers successfully imported and reopened a synthetic cookie file from the named volume, and an offline bot process shut down cleanly through Docker's SIGTERM signal.
 
 GitHub Actions includes a Docker build-and-smoke job for future changes. Docker Desktop on Windows/macOS and ARM64 builds were not executed during this validation. Live Discord audio and authenticated YouTube playback still need the acceptance checks above with your own credentials.
+
+## Diagnose repeated HTTP 403 after importing cookies
+
+A saved session does not guarantee that YouTube will serve an audio URL. The project currently pins the latest checked stable yt-dlp release, but some clients or formats require a separately supported playback token. Repeatedly exporting cookies does not establish or fix that condition.
+
+Update the checkout and rebuild, then compare the download clients from the same container/network and saved-session volume:
+
+```sh
+git pull --ff-only
+docker compose build
+docker compose run --rm -T bot python -m scripts.diagnose_youtube "https://www.youtube.com/watch?v=wLiNK2DQZFg"
+```
+
+This bounded diagnostic extracts one stream, tests a small sample with yt-dlp's native downloader, and asks FFmpeg to produce one audio frame. It never joins Discord or modifies the saved session. Output includes the installed version, cookie-file presence (not validity), format ID/protocol/codec, each client's result, and allowlisted warning classifications. It omits cookie/header values, signed URLs, titles, and raw provider errors. A playback-token warning is evidence to investigate, not proof that it caused the failure.
+
+- Both clients fail: investigate the selected format, YouTube access, network restrictions, and any reported extractor signals.
+- Native download passes and FFmpeg fails: investigate the handoff or decoder rather than requesting another cookie export.
+- Both pass: retry `/play`; the problem may be transient or specific to another stream.
+- Extraction fails: inspect the safe signals for session or JavaScript challenge problems.
+
+For a public video, optionally repeat with `--anonymous` to compare without reading the saved cookie file. This does not delete or change the session. The probe has a 75-second deadline and removes its temporary sample and cookie snapshot. Linux container cleanup also terminates Node/FFmpeg descendants. Successful diagnostic execution is not proof of audible Discord playback.
