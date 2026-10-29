@@ -108,3 +108,52 @@ class DiagnosticTests(unittest.TestCase):
         result = run_isolated('https://invalid.example/private-token', timeout=5)
         self.assertEqual(result, {'diagnostic': 'worker_failed'})
         self.assertNotIn('private-token', json.dumps(result))
+
+
+class BotPathDiagnosticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bot_worker_path_is_used_and_decoder_failure_is_reported_safely(self):
+        from unittest.mock import AsyncMock
+
+        from musicbot.media import AudioStream
+        from scripts.diagnose_youtube import probe_bot_path
+
+        media = Mock()
+        media.resolve = AsyncMock(
+            return_value=AudioStream('https://cdn.googlevideo.com/private-token')
+        )
+        media.close = AsyncMock()
+        source = Mock()
+        source.prepare.side_effect = AudioPlaybackError('HTTP 403 safe classification')
+        with (
+            patch('scripts.diagnose_youtube.Media', return_value=media),
+            patch('scripts.diagnose_youtube.audio_source', return_value=source),
+        ):
+            result = await probe_bot_path('https://youtube.com/watch?v=test', Path('/nonexistent'))
+        self.assertEqual(result['path'], 'bot_worker')
+        self.assertEqual(result['bot_worker_resolution'], 'passed')
+        self.assertEqual(result['ffmpeg_decode'], 'failed')
+        self.assertNotIn('private-token', json.dumps(result))
+        media.resolve.assert_awaited_once()
+        media.close.assert_awaited_once()
+        source.cleanup.assert_called_once()
+
+    async def test_successful_bot_path_is_not_confused_with_downloader_comparison(self):
+        from unittest.mock import AsyncMock
+
+        from musicbot.media import AudioStream
+        from scripts.diagnose_youtube import probe_bot_path
+
+        media = Mock()
+        media.resolve = AsyncMock(return_value=AudioStream('https://cdn.googlevideo.com/audio'))
+        media.close = AsyncMock()
+        source = Mock()
+        with (
+            patch('scripts.diagnose_youtube.Media', return_value=media),
+            patch('scripts.diagnose_youtube.audio_source', return_value=source),
+        ):
+            result = await probe_bot_path('https://youtube.com/watch?v=test', Path('/nonexistent'))
+        self.assertEqual(result['ffmpeg_decode'], 'passed')
+        self.assertNotIn('native_download', result)
+        source.prepare.assert_called_once()
+        source.cleanup.assert_called_once()
+        media.close.assert_awaited_once()

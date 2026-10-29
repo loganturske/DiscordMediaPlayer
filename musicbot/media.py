@@ -194,6 +194,10 @@ class Media:
                 'retries': 2,
                 'extractor_retries': 2,
                 'format': 'bestaudio/best',
+                # Probe candidates before handing off a short-lived URL. This
+                # lets yt-dlp skip rejected formats and establish a working GET.
+                'check_formats': False if flat else 'selected',
+                'paths': {'temp': tmp},
                 'noplaylist': not flat,
                 'extract_flat': 'in_playlist' if flat else False,
                 'lazy_playlist': True,

@@ -8,6 +8,7 @@ cookie values, request headers, video titles, or signed stream URLs.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -20,7 +21,15 @@ from pathlib import Path
 from yt_dlp.version import __version__
 
 from musicbot.audio import AudioPlaybackError, audio_source
-from musicbot.media import AudioStream, Media, stream_headers, stream_url, youtube_url
+from musicbot.media import (
+    AudioStream,
+    Media,
+    MediaError,
+    Track,
+    stream_headers,
+    stream_url,
+    youtube_url,
+)
 
 
 class DiagnosticLogger:
@@ -64,7 +73,11 @@ def safe_label(value):
 
 def probe(url: str, cookie_file: Path, snapshot_root: Path) -> dict:
     """Compare one extracted stream with native download and real PCM decoding."""
-    report = {'yt_dlp_version': __version__, 'cookie_file_present': cookie_file.is_file()}
+    report = {
+        'path': 'same_process_comparison',
+        'yt_dlp_version': __version__,
+        'cookie_file_present': cookie_file.is_file(),
+    }
     logger = DiagnosticLogger()
     media = Media(cookie_file, snapshot_root=snapshot_root)
     try:
@@ -158,6 +171,42 @@ def run_isolated(url: str, *, anonymous=False, timeout=75) -> dict:
             process.communicate(timeout=5)
 
 
+async def probe_bot_path(url: str, cookie_file: Path) -> dict:
+    """Exercise the exact resolve worker/IPC/cleanup path used by Player."""
+    report = {
+        'path': 'bot_worker',
+        'yt_dlp_version': __version__,
+        'cookie_file_present': cookie_file.is_file(),
+        'format_validation': 'enabled',
+    }
+    media = Media(cookie_file)
+    source = None
+    try:
+        async with asyncio.timeout(75):
+            stream = await media.resolve(Track(youtube_url(url), 'diagnostic', 0))
+            report['bot_worker_resolution'] = 'passed'
+            source = audio_source(stream)
+            await asyncio.to_thread(source.prepare)
+            report['ffmpeg_decode'] = 'passed'
+    except AudioPlaybackError as error:
+        report['ffmpeg_decode'] = 'failed'
+        report['decoder_reason'] = str(error)
+    except MediaError as error:
+        report['bot_worker_resolution'] = 'failed'
+        report['resolution_reason'] = str(error)
+    except TimeoutError:
+        report['diagnostic'] = 'timed_out'
+    except Exception:
+        report['diagnostic'] = 'unexpected_setup_failure'
+    finally:
+        try:
+            if source is not None:
+                await asyncio.to_thread(source.cleanup)
+        finally:
+            await media.close()
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('url')
@@ -166,21 +215,29 @@ def main():
         action='store_true',
         help='Test without reading the saved session; the file is never changed.',
     )
+    parser.add_argument(
+        '--compare-downloaders',
+        action='store_true',
+        help='Run the older same-process native-then-FFmpeg comparison instead of the bot worker path.',
+    )
     parser.add_argument('--worker-root', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
         url = youtube_url(args.url)
     except ValueError:
         parser.error('Use an HTTPS YouTube video URL.')
-    if args.worker_root:
+    with tempfile.TemporaryDirectory(prefix='discord-diagnostic-config-') as temporary:
         cookie_file = (
-            args.worker_root / 'no-cookies.txt'
+            Path(temporary) / 'no-cookies.txt'
             if args.anonymous
             else Path(os.environ.get('YOUTUBE_COOKIE_FILE', 'data/youtube-cookies.txt'))
         )
-        result = probe(url, cookie_file, args.worker_root)
-    else:
-        result = run_isolated(url, anonymous=args.anonymous)
+        if args.worker_root:
+            result = probe(url, cookie_file, args.worker_root)
+        elif args.compare_downloaders:
+            result = run_isolated(url, anonymous=args.anonymous)
+        else:
+            result = asyncio.run(probe_bot_path(url, cookie_file))
     print(json.dumps(result, indent=2))
 
 

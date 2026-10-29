@@ -3,6 +3,7 @@
 import errno
 import io
 import os
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -232,32 +233,30 @@ class AudioTests(unittest.TestCase):
                         self.skipTest('Execution sandbox prevents binding a loopback test server.')
                     raise
 
-    @unittest.skipUnless(os.name == 'posix', 'Executable fixture uses a POSIX shebang')
     def test_large_stderr_is_drained_without_leaking_private_values(self):
-        with TemporaryDirectory() as temporary:
-            executable = Path(temporary) / 'fake-ffmpeg'
-            executable.write_text(
-                f'#!{sys.executable}\n'
-                'import sys\n'
-                'sys.stderr.buffer.write(b"x" * 300000)\n'
-                'sys.stderr.write("Server returned 403 Forbidden: https://video.googlevideo.com/audio?signature=private-secret Cookie: private-cookie\\n")\n'
-                'sys.stderr.flush()\n'
-                'sys.exit(1)\n'
-            )
-            executable.chmod(0o700)
-            source = PCMSource(
-                'https://video.googlevideo.com/audio?signature=private-secret',
-                executable=str(executable),
-            )
-            pool = ThreadPoolExecutor(max_workers=1)
-            try:
-                result = pool.submit(source.read)
-                with self.assertRaises(AudioPlaybackError) as failure:
-                    result.result(timeout=5)
-                self.assertNotIn('private-secret', str(failure.exception))
-                self.assertNotIn('private-cookie', str(failure.exception))
-                self.assertNotIn('googlevideo.com', repr(failure.exception))
-                self.assertLessEqual(len(source._diagnostics._tail), source._diagnostics.MAX_BYTES)
-            finally:
-                source.cleanup()
-                pool.shutdown(wait=True)
+        # Invoke the trusted interpreter directly so the fixture also works on
+        # Compose's noexec /tmp mount; no production security setting is relaxed.
+        script = (
+            'import sys\n'
+            'sys.stderr.buffer.write(b"x" * 300000)\n'
+            'sys.stderr.write("Server returned 403 Forbidden: https://video.googlevideo.com/audio?signature=private-secret Cookie: private-cookie\\n")\n'
+            'sys.stderr.flush()\n'
+            'sys.exit(1)\n'
+        )
+        source = PCMSource(
+            'https://video.googlevideo.com/audio?signature=private-secret',
+            executable=sys.executable,
+            before_options=shlex.join(['-c', script]),
+        )
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            result = pool.submit(source.read)
+            with self.assertRaises(AudioPlaybackError) as failure:
+                result.result(timeout=5)
+            self.assertNotIn('private-secret', str(failure.exception))
+            self.assertNotIn('private-cookie', str(failure.exception))
+            self.assertNotIn('googlevideo.com', repr(failure.exception))
+            self.assertLessEqual(len(source._diagnostics._tail), source._diagnostics.MAX_BYTES)
+        finally:
+            source.cleanup()
+            pool.shutdown(wait=True)

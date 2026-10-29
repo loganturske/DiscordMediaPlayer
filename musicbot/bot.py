@@ -86,6 +86,7 @@ class MusicBot(discord.Client):
 
     async def on_ready(self):
         logging.info('Discord connected: bot_id=%s guild_count=%s', self.user.id, len(self.guilds))
+        logging.info('Audio format validation enabled: native download probe before FFmpeg.')
 
     @staticmethod
     def has_listeners(player):

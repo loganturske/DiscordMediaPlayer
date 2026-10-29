@@ -159,11 +159,11 @@ docker compose build
 docker compose run --rm -T bot python -m scripts.diagnose_youtube "https://www.youtube.com/watch?v=wLiNK2DQZFg"
 ```
 
-This bounded diagnostic extracts one stream, tests a small sample with yt-dlp's native downloader, and asks FFmpeg to produce one audio frame. It never joins Discord or modifies the saved session. Output includes the installed version, cookie-file presence (not validity), format ID/protocol/codec, each client's result, and allowlisted warning classifications. It omits cookie/header values, signed URLs, titles, and raw provider errors. A playback-token warning is evidence to investigate, not proof that it caused the failure.
+By default this bounded diagnostic now exercises the same `Media.resolve()` subprocess, IPC, worker cleanup, and FFmpeg preflight path as the bot. Resolution validates candidate formats with a short native download before returning an audio URL. The earlier same-process native-then-FFmpeg comparison is available with `--compare-downloaders`; it must not be treated as proof that the bot worker path works. It never joins Discord or modifies the saved session. Default output includes the installed version, cookie-file presence (not validity), `path: bot_worker`, format-validation status, worker resolution, and FFmpeg preflight results. Comparison mode includes format ID/protocol/codec, separate download results, and allowlisted warning classifications. It omits cookie/header values, signed URLs, titles, and raw provider errors. A playback-token warning is evidence to investigate, not proof that it caused the failure.
 
-- Both clients fail: investigate the selected format, YouTube access, network restrictions, and any reported extractor signals.
-- Native download passes and FFmpeg fails: investigate the handoff or decoder rather than requesting another cookie export.
-- Both pass: retry `/play`; the problem may be transient or specific to another stream.
+- In comparison mode, both clients fail: investigate the selected format, YouTube access, network restrictions, and any reported extractor signals.
+- In comparison mode, native download passes and FFmpeg fails: investigate the handoff or decoder rather than requesting another cookie export.
+- The default bot-worker probe passes: retry `/play` after rebuilding/recreating the bot; use the same video URL. Comparison-mode success alone does not establish worker-path success.
 - Extraction fails: inspect the safe signals for session or JavaScript challenge problems.
 
-For a public video, optionally repeat with `--anonymous` to compare without reading the saved cookie file. This does not delete or change the session. The probe has a 75-second deadline and removes its temporary sample and cookie snapshot. Linux container cleanup also terminates Node/FFmpeg descendants. Successful diagnostic execution is not proof of audible Discord playback.
+For a public video, optionally repeat with `--anonymous` to compare without reading the saved cookie file. This does not delete or change the session. The default probe has a 75-second deadline and removes its temporary sample and cookie snapshot. Linux container cleanup also terminates Node/FFmpeg descendants. Successful diagnostic execution is not proof of audible Discord playback.
