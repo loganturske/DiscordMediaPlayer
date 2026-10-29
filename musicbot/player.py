@@ -13,6 +13,7 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+from .audio import AudioPlaybackError
 from .media import Track
 
 log = logging.getLogger(__name__)
@@ -260,19 +261,32 @@ class Player:
             self._notifier.cancel()
             await asyncio.gather(self._notifier, return_exceptions=True)
 
-    async def _play(self, track):
-        self._resolve_task = asyncio.create_task(self.media.resolve(track), name='music-resolve')
+    async def _load_source(self, track):
+        stream = await self.media.resolve(track)
+        source = self.make_source(stream)
         try:
-            stream = await self._resolve_task
+            prepare = getattr(source, 'prepare', None)
+            if prepare is not None:
+                await asyncio.to_thread(prepare)
+            return source
+        except BaseException:
+            # Cancellation must also stop FFmpeg, including a blocked first read.
+            await asyncio.to_thread(source.cleanup)
+            raise
+
+    async def _play(self, track):
+        self._resolve_task = asyncio.create_task(self._load_source(track), name='music-resolve')
+        try:
+            source = await self._resolve_task
         except asyncio.CancelledError:
             if self.closed or asyncio.current_task().cancelling():
                 raise
-            return  # A skip cancelled this resolution, not the playback worker.
+            return  # A skip cancelled this lookup/preflight, not the playback worker.
         finally:
             self._resolve_task = None
         if self.closed or self._skip.is_set():
+            source.cleanup()
             return
-        source = self.make_source(stream)
         loop = asyncio.get_running_loop()
         finished = loop.create_future()
         self._finished = finished
@@ -297,7 +311,16 @@ class Player:
             await self.send(f'Now playing: {track.title[:150]}')
             error = await finished
             if error and not self._skip.is_set():
-                await self.send('Audio playback failed; moving to the next track.')
+                detail = (
+                    str(error)
+                    if isinstance(error, AudioPlaybackError)
+                    else 'Moving to the next track.'
+                )
+                log.warning(
+                    'Audio playback failed: %s',
+                    detail if isinstance(error, AudioPlaybackError) else type(error).__name__,
+                )
+                await self.send(f'Audio playback failed: {detail}')
         finally:
             self._finished = None
 
@@ -320,11 +343,19 @@ class Player:
                 try:
                     await self._play(track)
                 except Exception as error:
-                    log.warning('Track playback failed: %s', type(error).__name__)
+                    detail = (
+                        str(error)
+                        if isinstance(error, AudioPlaybackError)
+                        else type(error).__name__
+                    )
+                    log.warning('Track playback failed: %s', detail)
                     if not self.closed:
-                        await self.send(
-                            f'Could not play {track.title[:150]}. It may be unavailable or require an updated YouTube session. Moving to the next track.'
-                        )
+                        if isinstance(error, AudioPlaybackError):
+                            await self.send(f'Could not play {track.title[:150]}. {error}')
+                        else:
+                            await self.send(
+                                f'Could not play {track.title[:150]}. It may be unavailable or require an updated YouTube session. Moving to the next track.'
+                            )
                 finally:
                     self.current = None
         finally:

@@ -11,6 +11,7 @@ import signal
 import sys
 import tempfile
 import weakref
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from itertools import islice
@@ -27,6 +28,55 @@ class Track:
     url: str
     title: str
     requested_by: int
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class AudioStream:
+    """Ephemeral audio URL and safe request headers; never persist or log it.
+
+    Stream extraction validates the HTTPS destination and keeps only the
+    non-credential headers needed to reproduce yt-dlp's media request.
+    """
+
+    url: str
+    headers: tuple[tuple[str, str], ...] = ()
+
+
+_ALLOWED_STREAM_HEADERS = {
+    'user-agent': 'User-Agent',
+    'referer': 'Referer',
+    'origin': 'Origin',
+    'accept': 'Accept',
+    'accept-language': 'Accept-Language',
+}
+
+
+def stream_headers(value: object) -> tuple[tuple[str, str], ...]:
+    """Keep bounded printable headers, excluding account cookies and auth.
+
+    Values become FFmpeg HTTP options, so line breaks, control characters,
+    ambiguous duplicates, and non-ASCII text must be rejected before playback.
+    Unknown headers are discarded rather than forwarded to the media CDN.
+    """
+    message = 'YouTube returned unsupported audio request headers.'
+    if not isinstance(value, Mapping) or len(value) > 32:
+        raise ValueError(message)
+    result = {}
+    for name, header_value in value.items():
+        if not isinstance(name, str):
+            raise ValueError(message)
+        canonical = _ALLOWED_STREAM_HEADERS.get(name.lower())
+        if canonical is None:
+            continue
+        if (
+            canonical in result
+            or not isinstance(header_value, str)
+            or len(header_value) > 4096
+            or any(not 32 <= ord(character) <= 126 for character in header_value)
+        ):
+            raise ValueError(message)
+        result[canonical] = header_value
+    return tuple(result.items())
 
 
 _IDENTIFIER = re.compile(r'[A-Za-z0-9_-]{1,256}\Z')
@@ -183,7 +233,7 @@ class Media:
                     requested_by,
                 )
 
-    def resolve_sync(self, url: str) -> str:
+    def resolve_sync(self, url: str) -> AudioStream:
         """Resolve one recorded video to a validated, short-lived audio URL."""
         with self.extractor() as ydl:
             result = ydl.extract_info(youtube_url(url), download=False)
@@ -191,7 +241,9 @@ class Media:
                 raise MediaError('No playable audio stream.')
             if result.get('is_live'):
                 raise MediaError('Live streams are not supported; queue a recorded video.')
-            return stream_url(result['url'])
+            return AudioStream(
+                stream_url(result['url']), stream_headers(result.get('http_headers', {}))
+            )
 
     async def _spawn(self):
         # The worker has no reason to receive the Discord credential.
@@ -386,7 +438,7 @@ class Media:
             if acquired:
                 self.import_slots.release()
 
-    async def resolve(self, track: Track) -> str:
+    async def resolve(self, track: Track) -> AudioStream:
         """Look up fresh audio using capacity reserved separately from imports."""
         url = youtube_url(track.url)
         try:
@@ -396,7 +448,10 @@ class Media:
                         message = await self._message(process, self.resolve_timeout)
                         if message['type'] != 'stream':
                             raise MediaError('Invalid audio response from the YouTube extractor.')
-                        return stream_url(message.get('url', ''))
+                        return AudioStream(
+                            stream_url(message.get('url', '')),
+                            stream_headers(message.get('headers', {})),
+                        )
         except TimeoutError:
             raise MediaError('YouTube audio lookup timed out; try again later.') from None
 

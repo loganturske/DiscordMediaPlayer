@@ -8,6 +8,7 @@ The bot runs one Discord client and event loop. Each active server has one `Play
 | --- | --- |
 | `musicbot/config.py` | Parse environment settings once and reject invalid ranges before connecting. Credentials stay outside the settings object. |
 | `musicbot/bot.py` | Register slash commands, validate server/channel access, coordinate voice connections, format Discord messages, and handle process shutdown. |
+| `musicbot/audio.py` | Decode audio, prime a complete PCM frame, retain bounded private diagnostics, and expose only classified playback failures. |
 | `musicbot/player.py` | Own a server's FIFO queue, import jobs, playback loop, notifications, and shutdown. |
 | `musicbot/media.py` | Validate URLs, limit extraction concurrency, exchange messages with workers, enforce deadlines, and clean up processes and private files. |
 | `musicbot/extractor_worker.py` | Run one yt-dlp operation and emit a small JSON-lines response stream. |
@@ -18,8 +19,8 @@ The bot runs one Discord client and event loop. Each active server has one `Play
 1. `/play` validates the link and the caller's server and voice membership. A per-server lock protects voice connection creation and queue submission. Global capacity includes connections still being established.
 2. `Player.submit()` appends an import job with the queue's current generation. A single importer per player processes jobs in submission order.
 3. `Media.import_tracks()` starts a worker that yields video metadata incrementally. The player appends canonical video URLs, titles, and requester IDs; it does not store expiring audio URLs.
-4. The playback loop removes one track and resolves its audio URL immediately before use. Resolution has separate capacity from imports, so long playlists cannot occupy every playback extraction slot.
-5. FFmpeg decodes the stream to stereo 48 kHz PCM. discord.py consumes 20 ms frames and encodes/transmits Opus through the voice connection. Audio is streamed, not downloaded to a playlist cache.
+4. The playback loop removes one track and resolves its audio URL and required non-credential HTTP headers immediately before use. Resolution has separate capacity from imports, so long playlists cannot occupy every playback extraction slot.
+5. FFmpeg verifies HTTPS with the host CA bundle and decodes the stream to stereo 48 kHz PCM. A preflight read runs off the event loop, and only a complete first frame permits the player to announce playback. discord.py consumes 20 ms frames and encodes/transmits Opus through the voice connection. Audio is streamed, not downloaded to a playlist cache.
 6. The voice thread reports completion with `loop.call_soon_threadsafe`. Each track owns a distinct completion future, so a late callback cannot complete the next track.
 
 Notifications use a separate bounded delivery loop. Discord text-channel failures or rate limits do not pause the audio loop.
@@ -46,7 +47,7 @@ Worker stdout is reserved for JSON lines:
 | --- | --- |
 | `track` | `url`, `title`, `requested_by`: one import result. |
 | `done` | Import completed successfully. |
-| `stream` | `url`: one resolved audio stream. The parent validates the HTTPS Google video CDN destination before returning it to playback. |
+| `stream` | `url` and `headers`: one resolved audio stream. The parent validates the HTTPS Google video CDN destination and a bounded, printable HTTP-header whitelist before returning it to playback. Cookie and Authorization headers are excluded. |
 | `error` | Extraction failed. Provider exception text is deliberately omitted because it can contain session data or signed URLs. |
 
 The parent checks message types and required fields. Unexpected EOF, malformed output, inactivity, or a deadline expiration fails the operation while preserving previously queued tracks. Do not add ordinary logging to worker stdout or print raw provider responses.
@@ -80,3 +81,9 @@ Run the documented coverage command from the repository root:
 ```
 
 Tests never need real tokens or cookies. Live Discord and YouTube acceptance remains separate; follow [DEPLOYMENT.md](DEPLOYMENT.md) before release. Proposed capabilities and acceptance criteria live in [ROADMAP.md](ROADMAP.md).
+
+## Audio diagnostics
+
+FFmpeg stderr can contain signed URLs and request headers. `audio.py` drains it in a dedicated thread, retains only the last 8 KiB privately, and exposes static classifications for HTTP access errors, TLS trust failures, network failures, unsupported options, and decoding failures. Raw stderr and decoder arguments are never logged by this wrapper. The diagnostic buffer must not be exposed through command responses or logs.
+
+An incomplete PCM read waits briefly for FFmpeg's exit status, so stdout closing just before process exit cannot be mistaken for success. Empty streams fail even if FFmpeg exits zero. A valid first frame is cached, consumed exactly once by the audio thread, and announced only after preflight succeeds. Skipping during preflight cancels the lookup and reaps the decoder. Midstream failures use the same safe diagnostic path and continue to the next queued track.

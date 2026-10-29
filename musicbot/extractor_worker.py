@@ -21,7 +21,8 @@ def main():
                 emit({'type': 'track', **asdict(track)})
             emit({'type': 'done'})
         elif request['mode'] == 'resolve':
-            emit({'type': 'stream', 'url': media.resolve_sync(request['url'])})
+            stream = media.resolve_sync(request['url'])
+            emit({'type': 'stream', 'url': stream.url, 'headers': dict(stream.headers)})
         else:
             raise ValueError('Unknown operation')
     except Exception:

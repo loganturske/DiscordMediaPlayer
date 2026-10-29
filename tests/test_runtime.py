@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import discord
 
+from musicbot.audio import AudioPlaybackError
 from musicbot.bot import MusicBot, audio_source
 from musicbot.config import Settings
 
@@ -72,7 +73,8 @@ class BotTests(unittest.TestCase):
     def test_ffmpeg_failure_has_no_broken_stderr_thread(self):
         source = audio_source('/nonexistent-discord-media-test-file.wav')
         try:
-            self.assertEqual(source.read(), b'')
+            with self.assertRaises(AudioPlaybackError):
+                source.read()
             self.assertIsNone(source._pipe_reader_thread)
             source._process.wait(timeout=5)
             self.assertNotEqual(source._process.returncode, 0)

@@ -10,11 +10,11 @@ import shutil
 import signal
 import subprocess
 from itertools import islice
-from urllib.parse import urlparse
 
 import discord
 from discord import app_commands
 
+from .audio import audio_source as audio_source
 from .config import Settings
 from .media import Media, youtube_url
 from .player import Player
@@ -28,33 +28,6 @@ def safe_text(message: str, limit: int = 1900) -> str:
 def title_text(title: str, limit: int = 100) -> str:
     """Keep provider titles to one bounded line in queue messages."""
     return ' '.join(title.split())[:limit]
-
-
-class PCMSource(discord.FFmpegPCMAudio):
-    def cleanup(self):
-        # discord.py 2.7.1 can drop its stdout pipe after an already-exited
-        # FFmpeg process without explicitly closing it.
-        stdout = getattr(self, '_stdout', None)
-        try:
-            super().cleanup()
-        finally:
-            if stdout:
-                stdout.close()
-
-
-def audio_source(url):
-    options = '-nostdin'
-    if urlparse(url).scheme in {'http', 'https'}:
-        options += ' -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -rw_timeout 20000000 -tls_verify 1'
-    # discord.py expects a file object; DEVNULL's integer constant incorrectly
-    # starts its stderr-copy thread and can crash that thread on FFmpeg errors.
-    with open(os.devnull, 'wb') as stderr:
-        return PCMSource(
-            url,
-            stderr=stderr,
-            before_options=options,
-            options='-vn -sn -dn',
-        )
 
 
 class MusicBot(discord.Client):

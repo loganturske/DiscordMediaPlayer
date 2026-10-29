@@ -361,3 +361,54 @@ class PlayerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.voice.disconnected)
         self.assertTrue(self.player._worker.done())
         self.assertTrue(self.player._importer.done())
+
+    async def test_failed_audio_preflight_never_announces_now_playing(self):
+        from musicbot.audio import AudioPlaybackError
+
+        cleaned = []
+
+        class Source:
+            def prepare(self):
+                raise AudioPlaybackError('FFmpeg could not download audio (HTTP 403).')
+
+            def cleanup(self):
+                cleaned.append(True)
+
+        self.player.make_source = lambda _: Source()
+        self.player.queue.append(track('failed'), 0)
+        await eventually(lambda: any('HTTP 403' in message for message in self.messages))
+        self.assertEqual(cleaned, [True])
+        self.assertFalse(self.voice.played)
+        self.assertFalse(any('Now playing' in message for message in self.messages))
+
+    async def test_audio_preflight_runs_off_loop_and_skip_cleans_source(self):
+        import threading
+
+        ready, released = threading.Event(), threading.Event()
+        cleaned = []
+        loop_thread = threading.get_ident()
+        prepare_threads = []
+
+        class Source:
+            def prepare(self):
+                prepare_threads.append(threading.get_ident())
+                ready.set()
+                if not released.wait(timeout=3):
+                    raise RuntimeError('test preflight was not released')
+
+            def cleanup(self):
+                cleaned.append(True)
+                released.set()
+
+        self.player.make_source = lambda _: Source()
+        self.player.queue.append(track('loading'), 0)
+        try:
+            await eventually(ready.is_set)
+            self.assertFalse(self.voice.played)
+            self.player.skip()
+            await eventually(lambda: self.player.current is None)
+            self.assertEqual(cleaned, [True])
+            self.assertNotEqual(prepare_threads, [loop_thread])
+            self.assertFalse(self.voice.played)
+        finally:
+            released.set()

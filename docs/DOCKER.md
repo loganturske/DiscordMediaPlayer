@@ -131,12 +131,16 @@ docker compose up -d --build
 
 Keep your `.env` and named volume. To refresh upstream base images during a deliberate update, use `docker compose build --pull` before `docker compose up -d`. Repeat a public-video playback check after updates. YouTube extraction can change independently of the container image; updating the image is not a guarantee that every video will work.
 
+If logs show the voice connection completed followed by `ffmpeg ... return code of 1`, the decoder failed; do not assume Docker's voice networking caused it. Current builds preserve extractor-selected request headers and report a classified playback error without exposing signed URLs. Update the project and rebuild, queue the video again, then inspect the safe error in Discord or the container logs. HTTP 403 means the media server rejected the audio request; a TLS certificate error means the host/container trust configuration needs attention. Keep certificate verification enabled.
+
+For an installation downloaded as a ZIP, download the latest ZIP and replace the `musicbot` folder in your existing project folder with the latest `musicbot` folder. Then run `docker compose up -d --build --force-recreate` from that same project folder. Keep your local `.env` and existing Compose project name so the token and named cookie volume remain available.
+
 If startup fails, inspect `docker compose logs --tail=100 bot`. Check for a missing/invalid bot token, invalid settings, or missing Discord permissions. If the bot connects but no audio is heard, check voice permissions and the host firewall/VPN's UDP access. If extraction fails, try a public recorded video, check the saved YouTube session, and review yt-dlp updates. Keep TLS verification enabled.
 
 A running container is not proof of successful playback. Before relying on it, verify two listeners, playlist import, pause/resume, skip during loading, stop during import, and a container restart. If using cookies, verify authenticated playback again after the restart. Docker does not bypass YouTube content restrictions or account requirements.
 
 ## Validation of this setup
 
-The Linux/amd64 image was built and tested with the supplied Dockerfile and Compose configuration. All 85 tests passed inside the test image, with 91.1% combined statement/branch coverage. The runtime smoke check passed with the read-only filesystem and non-root user. Separate containers successfully imported and reopened a synthetic cookie file from the named volume, and an offline bot process shut down cleanly through Docker's SIGTERM signal.
+The Linux/amd64 image was built and tested with the supplied Dockerfile and Compose configuration. All 101 tests passed inside the test image, with 90.8% combined statement/branch coverage, including real HTTP/HTTPS audio decoding, required request headers, safe HTTP 403 diagnostics, and certificate verification. The runtime smoke check passed with the read-only filesystem and non-root user. Separate containers successfully imported and reopened a synthetic cookie file from the named volume, and an offline bot process shut down cleanly through Docker's SIGTERM signal.
 
 GitHub Actions includes a Docker build-and-smoke job for future changes. Docker Desktop on Windows/macOS and ARM64 builds were not executed during this validation. Live Discord audio and authenticated YouTube playback still need the acceptance checks above with your own credentials.

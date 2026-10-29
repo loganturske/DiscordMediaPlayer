@@ -8,7 +8,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from musicbot.media import Media, MediaError, Track, stream_url, youtube_url
+from musicbot.media import (
+    AudioStream,
+    Media,
+    MediaError,
+    Track,
+    stream_headers,
+    stream_url,
+    youtube_url,
+)
 from scripts.import_cookies import install
 
 
@@ -119,6 +127,69 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 stream_url(url)
 
+    def test_stream_headers_preserve_request_identity_without_credentials(self):
+        self.assertEqual(
+            dict(
+                stream_headers(
+                    {
+                        'user-agent': 'extractor-agent',
+                        'Referer': 'https://www.youtube.com/',
+                        'Origin': 'https://www.youtube.com',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Cookie': 'private-test-cookie',
+                        'Authorization': 'private-test-auth',
+                        'X-Unknown-Header': 'discard-me',
+                    }
+                )
+            ),
+            {
+                'User-Agent': 'extractor-agent',
+                'Referer': 'https://www.youtube.com/',
+                'Origin': 'https://www.youtube.com',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.5',
+            },
+        )
+        self.assertEqual(stream_headers({}), ())
+
+    def test_stream_headers_reject_injection_and_malformed_values(self):
+        for headers in (
+            None,
+            [],
+            {1: 'value'},
+            {'User-Agent': None},
+            {'User-Agent': 'agent\r\nAuthorization: private-test-auth'},
+            {'Referer': 'https://www.youtube.com/\n'},
+            {'Origin': '\x00bad'},
+            {'User-Agent': 'agent\tbad'},
+            {'User-Agent': 'non-ascii-\u00e9'},
+            {'Accept': 'x' * 4097},
+            {'User-Agent': 'one', 'user-agent': 'two'},
+            {str(index): 'x' for index in range(33)},
+        ):
+            with self.subTest(headers=headers), self.assertRaisesRegex(ValueError, 'headers'):
+                stream_headers(headers)
+
+    def test_sync_resolve_preserves_extractor_headers(self):
+        class Extractor:
+            def extract_info(self, *args, **kwargs):
+                return {
+                    'url': 'https://cdn.googlevideo.com/audio',
+                    'http_headers': {'User-Agent': 'extractor-agent', 'Cookie': 'private-test'},
+                }
+
+        @contextmanager
+        def extractor(**kwargs):
+            yield Extractor()
+
+        media = Media(Path('/nonexistent'))
+        media.extractor = extractor
+        self.assertEqual(
+            media.resolve_sync('https://youtube.com/watch?v=test'),
+            AudioStream('https://cdn.googlevideo.com/audio', (('User-Agent', 'extractor-agent'),)),
+        )
+
     def test_import_limit_applies_even_if_extractor_ignores_it(self):
         class Extractor:
             def extract_info(self, *args, **kwargs):
@@ -198,7 +269,8 @@ class ValidationTests(unittest.TestCase):
                 media.resolve_sync('https://youtube.com/watch?v=test')
         Extractor.result = {'url': 'https://cdn.googlevideo.com/a'}
         self.assertEqual(
-            media.resolve_sync('https://youtube.com/watch?v=test'), Extractor.result['url']
+            media.resolve_sync('https://youtube.com/watch?v=test'),
+            AudioStream(Extractor.result['url']),
         )
 
 
@@ -251,12 +323,33 @@ else:
             for iterator in imports:
                 self.assertEqual((await anext(iterator)).title, 'one')
             self.assertEqual(
-                await self.media.resolve(self.track), 'https://cdn.googlevideo.com/audio'
+                await self.media.resolve(self.track),
+                AudioStream('https://cdn.googlevideo.com/audio'),
             )
         finally:
             for iterator in imports:
                 await iterator.aclose()
         self.assertTrue(all(p.returncode is not None for p in self.processes))
+        self.assertFalse(self.media._processes)
+
+    async def test_resolve_preserves_headers_across_worker_protocol(self):
+        self.worker("""print(json.dumps({'type':'stream','url':'https://cdn.googlevideo.com/audio',
+'headers':{'User-Agent':'extractor-agent','Referer':'https://www.youtube.com/','Cookie':'private-test'}}),flush=True)
+""")
+        stream = await self.media.resolve(self.track)
+        self.assertEqual(stream.url, 'https://cdn.googlevideo.com/audio')
+        self.assertEqual(
+            dict(stream.headers),
+            {'User-Agent': 'extractor-agent', 'Referer': 'https://www.youtube.com/'},
+        )
+        self.assertNotIn('cdn.googlevideo.com', repr(stream))
+
+    async def test_worker_header_injection_is_rejected_before_playback(self):
+        self.worker("""print(json.dumps({'type':'stream','url':'https://cdn.googlevideo.com/audio',
+'headers':{'User-Agent':'agent\\r\\nInjected: invalid'}}),flush=True)
+""")
+        with self.assertRaisesRegex(ValueError, 'headers'):
+            await self.media.resolve(self.track)
         self.assertFalse(self.media._processes)
 
     async def test_resolve_timeout_kills_and_reaps_worker(self):
@@ -454,11 +547,17 @@ class WorkerEntrypointTests(unittest.TestCase):
             patch('sys.stdin', StringIO(json.dumps(request))),
             patch('sys.stdout', output),
         ):
-            media.return_value.resolve_sync.return_value = 'https://cdn.googlevideo.com/audio'
+            media.return_value.resolve_sync.return_value = AudioStream(
+                'https://cdn.googlevideo.com/audio', (('User-Agent', 'extractor-agent'),)
+            )
             self.assertEqual(extractor_worker.main(), 0)
         self.assertEqual(
             json.loads(output.getvalue()),
-            {'type': 'stream', 'url': 'https://cdn.googlevideo.com/audio'},
+            {
+                'type': 'stream',
+                'url': 'https://cdn.googlevideo.com/audio',
+                'headers': {'User-Agent': 'extractor-agent'},
+            },
         )
 
     def test_errors_only_emit_safe_status(self):
